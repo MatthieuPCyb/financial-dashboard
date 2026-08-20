@@ -31,28 +31,33 @@ class ExpensesFrame(ctk.CTkFrame):
             row=0, column=0, columnspan=5, sticky="w", padx=14, pady=(12, 6)
         )
 
+        # Ligne 1 : montant, type, catégorie, sous-catégorie, date
         self.entry_montant = ctk.CTkEntry(form, placeholder_text="Montant (€)")
-        self.entry_montant.grid(row=1, column=0, sticky="ew", padx=(14, 6), pady=(0, 12))
+        self.entry_montant.grid(row=1, column=0, sticky="ew", padx=(14, 6), pady=(0, 6))
 
         self.type_var = ctk.StringVar(value="depense")
         self.menu_type = ctk.CTkOptionMenu(form, values=["depense", "revenu"], variable=self.type_var)
-        self.menu_type.grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 12))
+        self.menu_type.grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 6))
 
         self.categories = db.get_categories()
         noms_categories = [c["nom"] for c in self.categories] or ["Aucune catégorie"]
         self.cat_var = ctk.StringVar(value=noms_categories[0])
         self.menu_categorie = ctk.CTkOptionMenu(form, values=noms_categories, variable=self.cat_var)
-        self.menu_categorie.grid(row=1, column=2, sticky="ew", padx=6, pady=(0, 12))
+        self.menu_categorie.grid(row=1, column=2, sticky="ew", padx=6, pady=(0, 6))
+
+        self.entry_sous_categorie = ctk.CTkEntry(form, placeholder_text="Sous-catégorie (optionnel)")
+        self.entry_sous_categorie.grid(row=1, column=3, sticky="ew", padx=6, pady=(0, 6))
 
         self.entry_date = ctk.CTkEntry(form, placeholder_text="AAAA-MM-JJ")
         self.entry_date.insert(0, datetime.now().strftime("%Y-%m-%d"))
-        self.entry_date.grid(row=1, column=3, sticky="ew", padx=6, pady=(0, 12))
+        self.entry_date.grid(row=1, column=4, sticky="ew", padx=(6, 14), pady=(0, 6))
 
+        # Ligne 2 : note + bouton
         self.entry_note = ctk.CTkEntry(form, placeholder_text="Note (optionnel)")
-        self.entry_note.grid(row=1, column=4, sticky="ew", padx=(6, 14), pady=(0, 12))
+        self.entry_note.grid(row=2, column=0, columnspan=4, sticky="ew", padx=(14, 6), pady=(0, 14))
 
         ctk.CTkButton(form, text="+ Ajouter", command=self._add_transaction).grid(
-            row=2, column=4, sticky="e", padx=(6, 14), pady=(0, 14)
+            row=2, column=4, sticky="ew", padx=(6, 14), pady=(0, 14)
         )
 
     def _add_transaction(self):
@@ -75,15 +80,19 @@ class ExpensesFrame(ctk.CTkFrame):
         categorie = next((c for c in self.categories if c["nom"] == self.cat_var.get()), None)
         categorie_id = categorie["id"] if categorie else None
 
+        sous_categorie = self.entry_sous_categorie.get().strip() or None
+
         db.add_transaction(
             montant=montant,
             date=date,
             categorie_id=categorie_id,
             type_=self.type_var.get(),
             note=self.entry_note.get().strip(),
+            sous_categorie=sous_categorie,
         )
 
         self.entry_montant.delete(0, "end")
+        self.entry_sous_categorie.delete(0, "end")
         self.entry_note.delete(0, "end")
         self.refresh()
 
@@ -108,12 +117,26 @@ class ExpensesFrame(ctk.CTkFrame):
         style.configure("Budget.Treeview", rowheight=28, font=("Segoe UI", 11))
         style.configure("Budget.Treeview.Heading", font=("Segoe UI", 11, "bold"))
 
-        columns = ("date", "categorie", "type", "note", "montant")
+        columns = ("date", "categorie", "sous_categorie", "type", "note", "montant")
         self.tree = ttk.Treeview(
             self, columns=columns, show="headings", style="Budget.Treeview", selectmode="browse"
         )
-        headers = {"date": "Date", "categorie": "Catégorie", "type": "Type", "note": "Note", "montant": "Montant"}
-        widths = {"date": 90, "categorie": 110, "type": 80, "note": 200, "montant": 90}
+        headers = {
+            "date": "Date",
+            "categorie": "Catégorie",
+            "sous_categorie": "Sous-catégorie",
+            "type": "Type",
+            "note": "Note",
+            "montant": "Montant",
+        }
+        widths = {
+            "date": 90,
+            "categorie": 110,
+            "sous_categorie": 120,
+            "type": 80,
+            "note": 160,
+            "montant": 90,
+        }
         for col in columns:
             self.tree.heading(col, text=headers[col])
             self.tree.column(col, width=widths[col], anchor="w" if col != "montant" else "e")
@@ -152,6 +175,7 @@ class ExpensesFrame(ctk.CTkFrame):
                 values=(
                     t["date"],
                     t["categorie_nom"] or "—",
+                    t["sous_categorie"] or "—",
                     "Revenu" if t["type"] == "revenu" else "Dépense",
                     t["note"] or "",
                     f"{signe}{t['montant']:.2f} €",

@@ -3,11 +3,85 @@
 from datetime import datetime
 
 import customtkinter as ctk
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.figure import Figure
 
 import database as db
 from config import MOIS_FR, COULEUR_ACCENT, COULEUR_DANGER, COULEUR_SUCCES
+
+
+class CategoryRow(ctk.CTkFrame):
+    """Une ligne de catégorie avec un bouton pour dérouler ses sous-catégories."""
+
+    def __init__(self, master, month, categorie, total, couleur, **kwargs):
+        super().__init__(master, corner_radius=10, **kwargs)
+        self.month = month
+        self.categorie = categorie
+        self.expanded = False
+        self.sub_frame = None
+
+        self.grid_columnconfigure(1, weight=1)
+
+        self.toggle_btn = ctk.CTkButton(
+            self,
+            text="▸",
+            width=28,
+            height=28,
+            font=("Segoe UI", 13),
+            fg_color="transparent",
+            text_color="gray70",
+            hover_color=("gray85", "gray25"),
+            command=self._toggle,
+        )
+        self.toggle_btn.grid(row=0, column=0, padx=(8, 4), pady=10)
+
+        pastille = ctk.CTkLabel(self, text="●", text_color=couleur, font=("Segoe UI", 14), width=16)
+        pastille.grid(row=0, column=1, sticky="w", padx=(0, 4), pady=10)
+
+        nom_label = ctk.CTkLabel(self, text=categorie, font=("Segoe UI", 13))
+        nom_label.grid(row=0, column=1, sticky="w", padx=(24, 0), pady=10)
+
+        total_label = ctk.CTkLabel(
+            self, text=f"{total:,.0f} €".replace(",", " "), font=("Segoe UI", 13, "bold")
+        )
+        total_label.grid(row=0, column=2, sticky="e", padx=12, pady=10)
+
+    def _toggle(self):
+        self.expanded = not self.expanded
+        if self.expanded:
+            self.toggle_btn.configure(text="▾")
+            self._show_subcategories()
+        else:
+            self.toggle_btn.configure(text="▸")
+            if self.sub_frame is not None:
+                self.sub_frame.destroy()
+                self.sub_frame = None
+
+    def _show_subcategories(self):
+        self.sub_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.sub_frame.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=(36, 12), pady=(0, 8))
+        self.sub_frame.grid_columnconfigure(0, weight=1)
+
+        sous_rows = db.subcategory_breakdown(self.month, self.categorie)
+
+        if not sous_rows:
+            ctk.CTkLabel(
+                self.sub_frame,
+                text="Aucune sous-catégorie",
+                font=("Segoe UI", 11),
+                text_color="gray60",
+            ).grid(row=0, column=0, sticky="w", pady=2)
+            return
+
+        for i, row in enumerate(sous_rows):
+            nom = row["sous_categorie"] or "Non classé"
+            ctk.CTkLabel(
+                self.sub_frame, text=nom, font=("Segoe UI", 11), text_color="gray70"
+            ).grid(row=i, column=0, sticky="w", pady=2)
+            ctk.CTkLabel(
+                self.sub_frame,
+                text=f"{row['total']:,.0f} €".replace(",", " "),
+                font=("Segoe UI", 11),
+                text_color="gray70",
+            ).grid(row=i, column=1, sticky="e", pady=2)
 
 
 class DashboardFrame(ctk.CTkFrame):
@@ -22,11 +96,11 @@ class DashboardFrame(ctk.CTkFrame):
         self.card_depenses = self._make_card(1, "Dépenses", col=1)
         self.card_epargne = self._make_card(1, "Épargne", col=2)
 
-        self.chart_frame = ctk.CTkFrame(self, corner_radius=12)
-        self.chart_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=4, pady=12)
+        self.category_frame = ctk.CTkScrollableFrame(self, corner_radius=12, label_text="Dépenses par catégorie")
+        self.category_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=4, pady=12)
+        self.category_frame.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        self.canvas = None
         self.refresh()
 
     def _make_card(self, row, label, col=0):
@@ -57,35 +131,29 @@ class DashboardFrame(ctk.CTkFrame):
             text_color=COULEUR_SUCCES if epargne >= 0 else COULEUR_DANGER,
         )
 
-        self._draw_chart(month)
+        self._draw_category_list(month)
 
-    def _draw_chart(self, month):
-        for widget in self.chart_frame.winfo_children():
+    def _draw_category_list(self, month):
+        for widget in self.category_frame.winfo_children():
             widget.destroy()
 
-        ctk.CTkLabel(
-            self.chart_frame, text="Dépenses par catégorie", font=("Segoe UI", 12), text_color="gray60"
-        ).pack(anchor="w", padx=16, pady=(12, 0))
-
         rows = db.category_breakdown(month)
-        fig = Figure(figsize=(6, 2.6), dpi=100)
-        fig.patch.set_alpha(0)
-        ax = fig.add_subplot(111)
-        ax.set_facecolor("none")
 
-        if rows:
-            noms = [r["categorie"] for r in rows]
-            totaux = [r["total"] for r in rows]
-            couleurs = [r["couleur"] for r in rows]
-            ax.bar(noms, totaux, color=couleurs)
-        else:
-            ax.text(0.5, 0.5, "Aucune dépense ce mois-ci", ha="center", va="center", transform=ax.transAxes)
+        if not rows:
+            ctk.CTkLabel(
+                self.category_frame,
+                text="Aucune dépense ce mois-ci",
+                font=("Segoe UI", 12),
+                text_color="gray60",
+            ).grid(row=0, column=0, sticky="w", padx=8, pady=12)
+            return
 
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
-        fig.tight_layout()
-
-        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
-        self.canvas = canvas
+        for i, row in enumerate(rows):
+            item = CategoryRow(
+                self.category_frame,
+                month=month,
+                categorie=row["categorie"],
+                total=row["total"],
+                couleur=row["couleur"],
+            )
+            item.grid(row=i, column=0, sticky="ew", pady=3)

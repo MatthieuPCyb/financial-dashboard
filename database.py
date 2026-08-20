@@ -49,6 +49,7 @@ def init_db():
             categorie_id INTEGER,
             type TEXT NOT NULL CHECK(type IN ('depense', 'revenu')),
             note TEXT,
+            sous_categorie TEXT,
             FOREIGN KEY (categorie_id) REFERENCES categories(id) ON DELETE SET NULL
         )
     """)
@@ -72,6 +73,13 @@ def init_db():
             FOREIGN KEY (objectif_id) REFERENCES objectifs_epargne(id) ON DELETE CASCADE
         )
     """)
+
+    # Migration : ajoute la colonne sous_categorie si la table transactions
+    # existait déjà sans elle (bases créées avant cette version).
+    cur.execute("PRAGMA table_info(transactions)")
+    colonnes = {row[1] for row in cur.fetchall()}
+    if "sous_categorie" not in colonnes:
+        cur.execute("ALTER TABLE transactions ADD COLUMN sous_categorie TEXT")
 
     cur.execute("SELECT COUNT(*) FROM categories")
     if cur.fetchone()[0] == 0:
@@ -108,11 +116,12 @@ def delete_category(category_id):
 
 # ---------- Transactions ----------
 
-def add_transaction(montant, date, categorie_id, type_, note=""):
+def add_transaction(montant, date, categorie_id, type_, note="", sous_categorie=None):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO transactions (montant, date, categorie_id, type, note) VALUES (?, ?, ?, ?, ?)",
-        (montant, date, categorie_id, type_, note),
+        "INSERT INTO transactions (montant, date, categorie_id, type, note, sous_categorie) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (montant, date, categorie_id, type_, note, sous_categorie),
     )
     conn.commit()
     conn.close()
@@ -129,7 +138,7 @@ def get_transactions(month=None, category_id=None):
     """month au format 'YYYY-MM'. Retourne les transactions les plus récentes en premier."""
     conn = get_connection()
     query = """
-        SELECT t.id, t.montant, t.date, t.type, t.note,
+        SELECT t.id, t.montant, t.date, t.type, t.note, t.sous_categorie,
                c.nom AS categorie_nom, c.couleur AS categorie_couleur
         FROM transactions t
         LEFT JOIN categories c ON c.id = t.categorie_id
@@ -167,18 +176,47 @@ def monthly_summary(month):
 
 
 def category_breakdown(month):
-    """Répartition des dépenses par catégorie pour un mois donné."""
+    """Retourne le total des dépenses par catégorie pour le mois donné ('YYYY-MM').
+
+    Chaque ligne contient : categorie (nom), total, couleur.
+    Seules les catégories ayant au moins une dépense ce mois-ci sont retournées,
+    triées par total décroissant.
+    """
     conn = get_connection()
     rows = conn.execute(
         """
         SELECT c.nom AS categorie, c.couleur AS couleur, SUM(t.montant) AS total
         FROM transactions t
         JOIN categories c ON c.id = t.categorie_id
-        WHERE t.type = 'depense' AND strftime('%Y-%m', t.date) = ?
+        WHERE strftime('%Y-%m', t.date) = ? AND t.type = 'depense'
         GROUP BY c.id
         ORDER BY total DESC
         """,
         (month,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def subcategory_breakdown(month, categorie):
+    """Retourne le total des dépenses par sous-catégorie, pour une catégorie
+    (nom) et un mois ('YYYY-MM') donnés.
+
+    Chaque ligne contient : sous_categorie, total. Les dépenses sans
+    sous-catégorie renseignée sont regroupées sous une valeur NULL
+    (affichée comme "Non classé" côté interface).
+    """
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT t.sous_categorie AS sous_categorie, SUM(t.montant) AS total
+        FROM transactions t
+        JOIN categories c ON c.id = t.categorie_id
+        WHERE strftime('%Y-%m', t.date) = ? AND c.nom = ? AND t.type = 'depense'
+        GROUP BY t.sous_categorie
+        ORDER BY total DESC
+        """,
+        (month, categorie),
     ).fetchall()
     conn.close()
     return rows
