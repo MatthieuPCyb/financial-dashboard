@@ -11,11 +11,12 @@ DB_PATH = Path(__file__).parent / "data" / "budget.db"
 
 DEFAULT_CATEGORIES = [
     ("Loyer", "#378ADD"),
+    ("Charges", "#378ADD"),
     ("Courses", "#639922"),
     ("Transport", "#BA7517"),
-    ("Loisirs", "#E24B4A"),
-    ("Santé", "#D4537E"),
-    ("Autres", "#888780"),
+    ("Variable", "#E24B4A"),
+    ("Abonnement", "#D4537E"),
+    ("Banque & Assurance", "#D4537E"),
 ]
 
 
@@ -29,7 +30,8 @@ def get_connection():
 
 
 def init_db():
-    """Crée les tables si elles n'existent pas encore, et ajoute des catégories par défaut."""
+    """Crée les tables si elles n'existent pas encore, migre le schéma si besoin,
+    et ajoute des catégories par défaut."""
     conn = get_connection()
     cur = conn.cursor()
 
@@ -42,6 +44,16 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS sous_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom TEXT NOT NULL,
+            categorie_id INTEGER NOT NULL,
+            FOREIGN KEY (categorie_id) REFERENCES categories(id) ON DELETE CASCADE,
+            UNIQUE(nom, categorie_id)
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             montant REAL NOT NULL,
@@ -49,8 +61,9 @@ def init_db():
             categorie_id INTEGER,
             type TEXT NOT NULL CHECK(type IN ('depense', 'revenu')),
             note TEXT,
-            sous_categorie TEXT,
-            FOREIGN KEY (categorie_id) REFERENCES categories(id) ON DELETE SET NULL
+            sous_categorie_id INTEGER,
+            FOREIGN KEY (categorie_id) REFERENCES categories(id) ON DELETE SET NULL,
+            FOREIGN KEY (sous_categorie_id) REFERENCES sous_categories(id) ON DELETE SET NULL
         )
     """)
 
@@ -74,12 +87,44 @@ def init_db():
         )
     """)
 
-    # Migration : ajoute la colonne sous_categorie si la table transactions
-    # existait déjà sans elle (bases créées avant cette version).
+    # Migration : les bases créées avant cette version stockaient la
+    # sous-catégorie en texte libre (colonne "sous_categorie"). On la
+    # remplace par une vraie relation vers la table "sous_categories".
     cur.execute("PRAGMA table_info(transactions)")
     colonnes = {row[1] for row in cur.fetchall()}
-    if "sous_categorie" not in colonnes:
-        cur.execute("ALTER TABLE transactions ADD COLUMN sous_categorie TEXT")
+
+    if "sous_categorie_id" not in colonnes:
+        cur.execute("ALTER TABLE transactions ADD COLUMN sous_categorie_id INTEGER")
+
+        if "sous_categorie" in colonnes:
+            anciennes = cur.execute(
+                """
+                SELECT DISTINCT sous_categorie, categorie_id FROM transactions
+                WHERE sous_categorie IS NOT NULL AND sous_categorie != ''
+                  AND categorie_id IS NOT NULL
+                """
+            ).fetchall()
+
+            for nom, categorie_id in anciennes:
+                cur.execute(
+                    "INSERT OR IGNORE INTO sous_categories (nom, categorie_id) VALUES (?, ?)",
+                    (nom, categorie_id),
+                )
+                ligne = cur.execute(
+                    "SELECT id FROM sous_categories WHERE nom = ? AND categorie_id = ?",
+                    (nom, categorie_id),
+                ).fetchone()
+                if ligne:
+                    cur.execute(
+                        "UPDATE transactions SET sous_categorie_id = ? "
+                        "WHERE sous_categorie = ? AND categorie_id = ?",
+                        (ligne["id"], nom, categorie_id),
+                    )
+
+            try:
+                cur.execute("ALTER TABLE transactions DROP COLUMN sous_categorie")
+            except sqlite3.OperationalError:
+                pass  # anciennes versions de SQLite ne supportent pas DROP COLUMN
 
     cur.execute("SELECT COUNT(*) FROM categories")
     if cur.fetchone()[0] == 0:
@@ -114,14 +159,56 @@ def delete_category(category_id):
     conn.close()
 
 
-# ---------- Transactions ----------
+# ---------- Sous-catégories ----------
 
-def add_transaction(montant, date, categorie_id, type_, note="", sous_categorie=None):
+def get_subcategories(categorie_id=None):
+    """Sans argument : retourne toutes les sous-catégories avec le nom de
+    leur catégorie parente (categorie_nom). Avec categorie_id : ne retourne
+    que les sous-catégories de cette catégorie."""
+    conn = get_connection()
+    if categorie_id:
+        rows = conn.execute(
+            "SELECT * FROM sous_categories WHERE categorie_id = ? ORDER BY nom",
+            (categorie_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT sc.*, c.nom AS categorie_nom
+            FROM sous_categories sc
+            JOIN categories c ON c.id = sc.categorie_id
+            ORDER BY c.nom, sc.nom
+            """
+        ).fetchall()
+    conn.close()
+    return rows
+
+
+def add_subcategory(nom, categorie_id):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO transactions (montant, date, categorie_id, type, note, sous_categorie) "
+        "INSERT INTO sous_categories (nom, categorie_id) VALUES (?, ?)",
+        (nom, categorie_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_subcategory(subcategorie_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM sous_categories WHERE id = ?", (subcategorie_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------- Transactions ----------
+
+def add_transaction(montant, date, categorie_id, type_, note="", sous_categorie_id=None):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO transactions (montant, date, categorie_id, type, note, sous_categorie_id) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (montant, date, categorie_id, type_, note, sous_categorie),
+        (montant, date, categorie_id, type_, note, sous_categorie_id),
     )
     conn.commit()
     conn.close()
@@ -138,10 +225,12 @@ def get_transactions(month=None, category_id=None):
     """month au format 'YYYY-MM'. Retourne les transactions les plus récentes en premier."""
     conn = get_connection()
     query = """
-        SELECT t.id, t.montant, t.date, t.type, t.note, t.sous_categorie,
-               c.nom AS categorie_nom, c.couleur AS categorie_couleur
+        SELECT t.id, t.montant, t.date, t.type, t.note,
+               c.nom AS categorie_nom, c.couleur AS categorie_couleur,
+               sc.nom AS sous_categorie_nom
         FROM transactions t
         LEFT JOIN categories c ON c.id = t.categorie_id
+        LEFT JOIN sous_categories sc ON sc.id = t.sous_categorie_id
         WHERE 1=1
     """
     params = []
@@ -209,11 +298,12 @@ def subcategory_breakdown(month, categorie):
     conn = get_connection()
     rows = conn.execute(
         """
-        SELECT t.sous_categorie AS sous_categorie, SUM(t.montant) AS total
+        SELECT sc.nom AS sous_categorie, SUM(t.montant) AS total
         FROM transactions t
         JOIN categories c ON c.id = t.categorie_id
+        LEFT JOIN sous_categories sc ON sc.id = t.sous_categorie_id
         WHERE strftime('%Y-%m', t.date) = ? AND c.nom = ? AND t.type = 'depense'
-        GROUP BY t.sous_categorie
+        GROUP BY t.sous_categorie_id
         ORDER BY total DESC
         """,
         (month, categorie),

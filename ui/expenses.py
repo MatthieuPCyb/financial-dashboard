@@ -42,11 +42,20 @@ class ExpensesFrame(ctk.CTkFrame):
         self.categories = db.get_categories()
         noms_categories = [c["nom"] for c in self.categories] or ["Aucune catégorie"]
         self.cat_var = ctk.StringVar(value=noms_categories[0])
-        self.menu_categorie = ctk.CTkOptionMenu(form, values=noms_categories, variable=self.cat_var)
+        self.menu_categorie = ctk.CTkOptionMenu(
+            form, values=noms_categories, variable=self.cat_var, command=self._on_category_change
+        )
         self.menu_categorie.grid(row=1, column=2, sticky="ew", padx=6, pady=(0, 6))
 
-        self.entry_sous_categorie = ctk.CTkEntry(form, placeholder_text="Sous-catégorie (optionnel)")
-        self.entry_sous_categorie.grid(row=1, column=3, sticky="ew", padx=6, pady=(0, 6))
+        # La sous-catégorie est désormais un menu déroulant dépendant de la
+        # catégorie choisie, alimenté depuis la table sous_categories (gérée
+        # dans l'écran Paramètres), et non plus un champ texte libre.
+        self.sous_categories = []
+        self.sous_cat_var = ctk.StringVar(value="Aucune sous-catégorie")
+        self.menu_sous_categorie = ctk.CTkOptionMenu(
+            form, values=["Aucune sous-catégorie"], variable=self.sous_cat_var
+        )
+        self.menu_sous_categorie.grid(row=1, column=3, sticky="ew", padx=6, pady=(0, 6))
 
         self.entry_date = ctk.CTkEntry(form, placeholder_text="AAAA-MM-JJ")
         self.entry_date.insert(0, datetime.now().strftime("%Y-%m-%d"))
@@ -59,6 +68,18 @@ class ExpensesFrame(ctk.CTkFrame):
         ctk.CTkButton(form, text="+ Ajouter", command=self._add_transaction).grid(
             row=2, column=4, sticky="ew", padx=(6, 14), pady=(0, 14)
         )
+
+        self._on_category_change()
+
+    def _on_category_change(self, _=None):
+        """Recharge la liste des sous-catégories selon la catégorie choisie."""
+        categorie = next((c for c in self.categories if c["nom"] == self.cat_var.get()), None)
+        categorie_id = categorie["id"] if categorie else None
+
+        self.sous_categories = db.get_subcategories(categorie_id) if categorie_id else []
+        noms = [sc["nom"] for sc in self.sous_categories] or ["Aucune sous-catégorie"]
+        self.menu_sous_categorie.configure(values=noms)
+        self.sous_cat_var.set(noms[0])
 
     def _add_transaction(self):
         try:
@@ -80,7 +101,10 @@ class ExpensesFrame(ctk.CTkFrame):
         categorie = next((c for c in self.categories if c["nom"] == self.cat_var.get()), None)
         categorie_id = categorie["id"] if categorie else None
 
-        sous_categorie = self.entry_sous_categorie.get().strip() or None
+        sous_categorie = next(
+            (sc for sc in self.sous_categories if sc["nom"] == self.sous_cat_var.get()), None
+        )
+        sous_categorie_id = sous_categorie["id"] if sous_categorie else None
 
         db.add_transaction(
             montant=montant,
@@ -88,11 +112,10 @@ class ExpensesFrame(ctk.CTkFrame):
             categorie_id=categorie_id,
             type_=self.type_var.get(),
             note=self.entry_note.get().strip(),
-            sous_categorie=sous_categorie,
+            sous_categorie_id=sous_categorie_id,
         )
 
         self.entry_montant.delete(0, "end")
-        self.entry_sous_categorie.delete(0, "end")
         self.entry_note.delete(0, "end")
         self.refresh()
 
@@ -162,6 +185,9 @@ class ExpensesFrame(ctk.CTkFrame):
         self.categories = db.get_categories()
         noms_categories = [c["nom"] for c in self.categories] or ["Aucune catégorie"]
         self.menu_categorie.configure(values=noms_categories)
+        if self.cat_var.get() not in noms_categories:
+            self.cat_var.set(noms_categories[0])
+        self._on_category_change()
 
         for row in self.tree.get_children():
             self.tree.delete(row)
@@ -175,7 +201,7 @@ class ExpensesFrame(ctk.CTkFrame):
                 values=(
                     t["date"],
                     t["categorie_nom"] or "—",
-                    t["sous_categorie"] or "—",
+                    t["sous_categorie_nom"] or "—",
                     "Revenu" if t["type"] == "revenu" else "Dépense",
                     t["note"] or "",
                     f"{signe}{t['montant']:.2f} €",
