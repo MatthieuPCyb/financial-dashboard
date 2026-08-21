@@ -89,18 +89,28 @@ class SettingsFrame(ctk.CTkFrame):
         transactions = db.get_transactions()
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["Date", "Catégorie", "Type", "Note", "Montant"])
+            writer.writerow(["Date", "Catégorie", "Sous-catégorie", "Type", "Note", "Montant"])
             for t in transactions:
-                writer.writerow([t["date"], t["categorie_nom"] or "", t["type"], t["note"] or "", t["montant"]])
+                writer.writerow([
+                    t["date"],
+                    t["categorie_nom"] or "",
+                    t["sous_categorie"] or "",
+                    t["type"],
+                    t["note"] or "",
+                    t["montant"],
+                ])
 
         messagebox.showinfo("Export réussi", f"Les transactions ont été exportées vers :\n{path}")
 
     def _import_csv(self):
         """Importe des transactions depuis un fichier CSV structuré comme celui
-        produit par l'export (colonnes : Date, Catégorie, Type, Note, Montant).
+        produit par l'export (colonnes : Date, Catégorie, Sous-catégorie, Type,
+        Note, Montant).
 
         - "Catégorie" doit correspondre au nom d'une catégorie existante
           (sinon la transaction est importée sans catégorie).
+        - "Sous-catégorie" est optionnelle (colonne absente ou valeur vide
+          acceptées, pour rester compatible avec d'anciens exports).
         - "Type" doit valoir "depense" ou "revenu".
         - Les lignes invalides sont ignorées et comptabilisées séparément.
         """
@@ -119,11 +129,14 @@ class SettingsFrame(ctk.CTkFrame):
             messagebox.showerror("Erreur", f"Impossible de lire le fichier :\n{exc}")
             return
 
+        # "Sous-catégorie" est optionnelle pour rester compatible avec les
+        # anciens fichiers exportés avant son ajout.
         required_columns = {"Date", "Catégorie", "Type", "Note", "Montant"}
         if not rows or not required_columns.issubset(reader.fieldnames or []):
             messagebox.showerror(
                 "Format invalide",
-                "Le fichier doit contenir les colonnes : Date, Catégorie, Type, Note, Montant.",
+                "Le fichier doit contenir au moins les colonnes : "
+                "Date, Catégorie, Type, Note, Montant.",
             )
             return
 
@@ -135,6 +148,7 @@ class SettingsFrame(ctk.CTkFrame):
         for row in rows:
             date = (row.get("Date") or "").strip()
             categorie_nom = (row.get("Catégorie") or "").strip()
+            sous_categorie = (row.get("Sous-catégorie") or "").strip() or None
             type_ = (row.get("Type") or "").strip().lower()
             note = (row.get("Note") or "").strip()
             montant_brut = (row.get("Montant") or "").strip()
@@ -171,6 +185,7 @@ class SettingsFrame(ctk.CTkFrame):
                 categorie_id=categorie_id,
                 type_=type_,
                 note=note,
+                sous_categorie=sous_categorie,
             )
             imported += 1
 
