@@ -219,5 +219,5 @@ __marimo__/
 
 
 test.py
-storage/budget.db
+data/budget.db
 requirements.txt
