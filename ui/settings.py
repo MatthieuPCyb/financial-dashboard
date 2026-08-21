@@ -21,6 +21,7 @@ class SettingsFrame(ctk.CTkFrame):
         self.scrollable_container.grid_columnconfigure(0, weight=1)
 
         self._build_categories_section()
+        self._build_subcategories_section()
         self._build_export_section()
         self.refresh()
 
@@ -182,7 +183,7 @@ class SettingsFrame(ctk.CTkFrame):
                 writer.writerow([
                     t["date"],
                     t["categorie_nom"] or "",
-                    t["sous_categorie"] or "",
+                    t["sous_categorie_nom"] or "",
                     t["type"],
                     t["note"] or "",
                     t["montant"],
@@ -191,17 +192,6 @@ class SettingsFrame(ctk.CTkFrame):
         messagebox.showinfo("Export réussi", f"Les transactions ont été exportées vers :\n{path}")
 
     def _import_csv(self):
-        """Importe des transactions depuis un fichier CSV structuré comme celui
-        produit par l'export (colonnes : Date, Catégorie, Sous-catégorie, Type,
-        Note, Montant).
-
-        - "Catégorie" doit correspondre au nom d'une catégorie existante
-          (sinon la transaction est importée sans catégorie).
-        - "Sous-catégorie" est optionnelle (colonne absente ou valeur vide
-          acceptées, pour rester compatible avec d'anciens exports).
-        - "Type" doit valoir "depense" ou "revenu".
-        - Les lignes invalides sont ignorées et comptabilisées séparément.
-        """
         path = filedialog.askopenfilename(
             title="Choisir un fichier CSV à importer",
             filetypes=[("Fichier CSV", "*.csv"), ("Tous les fichiers", "*.*")],
@@ -217,8 +207,6 @@ class SettingsFrame(ctk.CTkFrame):
             messagebox.showerror("Erreur", f"Impossible de lire le fichier :\n{exc}")
             return
 
-        # "Sous-catégorie" est optionnelle pour rester compatible avec les
-        # anciens fichiers exportés avant son ajout.
         required_columns = {"Date", "Catégorie", "Type", "Note", "Montant"}
         if not rows or not required_columns.issubset(reader.fieldnames or []):
             messagebox.showerror(
@@ -228,34 +216,40 @@ class SettingsFrame(ctk.CTkFrame):
             )
             return
 
-        categories_par_nom = {c["nom"].strip().lower(): c["id"] for c in db.get_categories()}
+        categories = db.get_categories()
+        categories_par_nom = {c["nom"].strip().lower(): c["id"] for c in categories}
+
+        # Sous-catégories existantes, indexées par (categorie_id, nom en minuscule).
+        # Ce dict est complété au fur et à mesure quand on en crée de nouvelles,
+        # pour éviter de recréer 10 fois la même sous-catégorie dans un import.
+        sous_categories_par_cle = {
+            (sc["categorie_id"], sc["nom"].strip().lower()): sc["id"]
+            for sc in db.get_subcategories()
+        }
 
         imported = 0
         skipped = 0
+        created_subcategories = 0
 
         for row in rows:
             date = (row.get("Date") or "").strip()
             categorie_nom = (row.get("Catégorie") or "").strip()
-            sous_categorie = (row.get("Sous-catégorie") or "").strip() or None
+            sous_categorie_nom = (row.get("Sous-catégorie") or "").strip()
             type_ = (row.get("Type") or "").strip().lower()
             note = (row.get("Note") or "").strip()
             montant_brut = (row.get("Montant") or "").strip()
 
-            # Date
             try:
                 datetime.strptime(date, "%Y-%m-%d")
             except ValueError:
                 skipped += 1
                 continue
 
-            # Type
             if type_ not in ("depense", "revenu"):
                 skipped += 1
                 continue
 
-            # Montant (accepte "-12.50", "+12.50" ou "12.50", virgule ou point)
-            montant_nettoye = montant_brut.replace("€", "").strip()
-            montant_nettoye = montant_nettoye.replace(",", ".")
+            montant_nettoye = montant_brut.replace("€", "").strip().replace(",", ".")
             try:
                 montant = abs(float(montant_nettoye))
             except ValueError:
@@ -267,22 +261,45 @@ class SettingsFrame(ctk.CTkFrame):
 
             categorie_id = categories_par_nom.get(categorie_nom.lower())
 
+            # Sous-catégorie : on ne peut la résoudre/créer que si une catégorie
+            # parente valide a été trouvée. Sans catégorie, la sous-catégorie
+            # n'a pas de sens et est ignorée (mais la transaction reste importée).
+            sous_categorie_id = None
+            if categorie_id and sous_categorie_nom:
+                cle = (categorie_id, sous_categorie_nom.lower())
+                sous_categorie_id = sous_categories_par_cle.get(cle)
+
+                if sous_categorie_id is None:
+                    db.add_subcategory(sous_categorie_nom, categorie_id)
+                    nouvelle = next(
+                        (
+                            sc for sc in db.get_subcategories(categorie_id)
+                            if sc["nom"].strip().lower() == sous_categorie_nom.lower()
+                        ),
+                        None,
+                    )
+                    if nouvelle:
+                        sous_categorie_id = nouvelle["id"]
+                        sous_categories_par_cle[cle] = sous_categorie_id
+                        created_subcategories += 1
+
             db.add_transaction(
                 montant=montant,
                 date=date,
                 categorie_id=categorie_id,
                 type_=type_,
                 note=note,
-                sous_categorie=sous_categorie,
+                sous_categorie_id=sous_categorie_id,
             )
             imported += 1
 
         message = f"{imported} transaction(s) importée(s)."
+        if created_subcategories:
+            message += f"\n{created_subcategories} sous-catégorie(s) créée(s) automatiquement."
         if skipped:
             message += f"\n{skipped} ligne(s) ignorée(s) (format invalide)."
         messagebox.showinfo("Import terminé", message)
 
-        # Rafraîchit le tableau de bord / la liste des dépenses si l'app est visible
         app = self.winfo_toplevel()
         if hasattr(app, "frames"):
             for frame in app.frames.values():
